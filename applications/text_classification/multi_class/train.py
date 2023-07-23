@@ -27,7 +27,81 @@ from sklearn.metrics import (
     classification_report,
     precision_recall_fscore_support,
 )
-from utils import log_metrics_debug, preprocess_function, read_local_dataset
+
+from paddlenlp.utils.log import logger
+
+
+def preprocess_function(examples, tokenizer, max_length, is_test=False):
+    """
+    Builds model inputs from a sequence for sequence classification tasks
+    by concatenating and adding special tokens.
+    """
+    result = tokenizer(examples["text"], max_length=max_length, truncation=True)
+    if not is_test:
+        result["labels"] = np.array([examples["label"]], dtype="int64")
+    return result
+
+
+def read_local_dataset(path, label2id=None, is_test=False):
+    """
+    Read dataset.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                if is_test:
+                    sentence = line.strip()
+                    yield {"text": sentence}
+                else:
+                    items = line.strip().split("\t")
+                    yield {"text": items[0], "label": label2id[items[1]]}
+            except:
+                print(f"--*--line:--*--{line}--*--")
+
+
+def log_metrics_debug(output, id2label, dev_ds, bad_case_path):
+    """
+    Log metrics in debug mode.
+    """
+    predictions, label_ids, metrics = output
+    pred_ids = np.argmax(predictions, axis=-1)
+    logger.info("-----Evaluate model-------")
+    logger.info("Dev dataset size: {}".format(len(dev_ds)))
+    logger.info("Accuracy in dev dataset: {:.2f}%".format(metrics["test_accuracy"] * 100))
+    logger.info(
+        "Macro average | precision: {:.2f} | recall: {:.2f} | F1 score {:.2f}".format(
+            metrics["test_macro avg"]["precision"] * 100,
+            metrics["test_macro avg"]["recall"] * 100,
+            metrics["test_macro avg"]["f1-score"] * 100,
+        )
+    )
+    for i in id2label:
+        l = id2label[i]
+        logger.info("Class name: {}".format(l))
+        i = "test_" + str(i)
+        if i in metrics:
+            logger.info(
+                "Evaluation examples in dev dataset: {}({:.1f}%) | precision: {:.2f} | recall: {:.2f} | F1 score {:.2f}".format(
+                    metrics[i]["support"],
+                    100 * metrics[i]["support"] / len(dev_ds),
+                    metrics[i]["precision"] * 100,
+                    metrics[i]["recall"] * 100,
+                    metrics[i]["f1-score"] * 100,
+                )
+            )
+        else:
+            logger.info("Evaluation examples in dev dataset: 0 (0%)")
+        logger.info("----------------------------")
+
+    with open(bad_case_path, "w", encoding="utf-8") as f:
+        f.write("Text\tLabel\tPrediction\n")
+        for i, (p, l) in enumerate(zip(pred_ids, label_ids)):
+            p, l = int(p), int(l)
+            if p != l:
+                f.write(dev_ds.data[i]["text"] + "\t" + id2label[l] + "\t" + id2label[p] + "\n")
+
+    logger.info("Bad case in dev dataset saved in {}".format(bad_case_path))
+
 
 from paddlenlp.data import DataCollatorWithPadding
 from paddlenlp.datasets import load_dataset
@@ -88,13 +162,27 @@ class ModelArguments:
 # yapf: enable
 
 
+class FakeClass:
+    def __init__(self, xxx):
+        self.set(xxx)
+
+    def set(self, xxx):
+        for k, v in xxx.items():
+            setattr(self, k, v)
+
+    def print_config(self, *args, **kwargs):
+        print("xx")
+
+
 def main():
     """
     Training a binary or multi classification model
     """
-
     parser = PdArgumentParser((ModelArguments, DataArguments, CompressionArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # model_args, data_args, training_args = FakeClass(config), FakeClass(config), FakeClass(config)
+
     if training_args.do_compress:
         training_args.strategy = "dynabert"
     if training_args.do_train or training_args.do_compress:
@@ -227,4 +315,16 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    import copy 
+
+    sys.argv.extend(
+        "--do_train --do_eval --do_export --model_name_or_path ernie-3.0-tiny-micro-v2-zh --output_dir checkpoint --device gpu --num_train_epochs 100 --early_stopping True --early_stopping_patience 5 --learning_rate 3e-3 --max_length 128 --per_device_eval_batch_size 32 --per_device_train_batch_size 32 --metric_for_best_model accuracy --load_best_model_at_end --logging_steps 5 --evaluation_strategy epoch --save_strategy epoch --save_total_limit 1".split()
+    )
+    for i in copy.copy(sys.argv):
+        if i.find('-f') > -1:
+            sys.argv.remove(i)
+        elif i.find('jupyter') > -1:
+            sys.argv.remove(i)
     main()
+
